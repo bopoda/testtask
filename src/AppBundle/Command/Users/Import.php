@@ -17,6 +17,7 @@ class Import extends ContainerAwareCommand
     private $updatedCnt = 0;
     private $insertedCnt = 0;
     private $processedCnt = 0;
+    private $skippedCnt = 0;
 
     /**
      * @var \Doctrine\ORM\EntityManagerInterface
@@ -37,6 +38,12 @@ class Import extends ContainerAwareCommand
             );
     }
 
+    /**
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @throws \Exception
+     * @return void
+     */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         $csvFilePath = $input->getOption('csvFileName');
@@ -45,37 +52,47 @@ class Import extends ContainerAwareCommand
             throw new \Exception('file not found: '.$csvFilePath);
         }
 
-        $this->readCsv($output, $csvFilePath);
+        $this->processCsvFile($output, $csvFilePath);
     }
 
-    private function readCsv( OutputInterface $output, $csvFilePath)
+    /**
+     * @param OutputInterface $output
+     * @param $csvFilePath
+     * @return void
+     */
+    private function processCsvFile( OutputInterface $output, $csvFilePath)
     {
         $doctrine = $this->getContainer()->get('doctrine');
         $this->em = $doctrine->getManager();
 
-        $output->writeln(['Start importing...']);
+        $output->writeln(['Start importing (only row with first unique email will be processed)...']);
 
         $rows = [];
+        $existingEmails = [];
 
         $output->writeln(['Skip first line with titles']);
         if (($handle = fopen($csvFilePath, 'r')) !== false) {
             fgetcsv($handle);
 
-            $i = 1;
             while (($data = fgetcsv($handle, null, self::DELIMITER)) !== false) {
-                $i++;
                 $this->processedCnt++;
                 if (count($data) != self::COLUMNS_AMOUNT_IN_CSV) {
-                    $output->writeln(['Skip line '. $i]);
+                    $this->skippedCnt++;
                     continue;
                 }
 
-                $rows[] = array_map('trim', $data);
+                if (in_array($data[3], $existingEmails)) {
+                    $this->skippedCnt++;
+                    continue;
+                }
+
+                $existingEmails[] = $data[3];
+                $rows[] = $data;
 
                 if (count($rows) >= self::BATCH_ROWS) {
                     $this->saveUsersData($rows);
                     $rows = [];
-                    $output->writeln([date('Y-m-d H:i:s') . " Processed $this->processedCnt rows, inserted $this->insertedCnt, updated $this->updatedCnt."]);
+                    $output->writeln([date('Y-m-d H:i:s') . " Processed $this->processedCnt rows, inserted $this->insertedCnt, updated $this->updatedCnt, skipped $this->skippedCnt."]);
                 }
             }
             fclose($handle);
@@ -85,9 +102,13 @@ class Import extends ContainerAwareCommand
             $this->saveUsersData($rows);
         }
 
-        $output->writeln([date('Y-m-d H:i:s') . " Finally, processed $this->processedCnt rows, inserted $this->insertedCnt, updated $this->updatedCnt."]);
+        $output->writeln([date('Y-m-d H:i:s') . " Finally, processed $this->processedCnt rows, inserted $this->insertedCnt, updated $this->updatedCnt, skipped $this->skippedCnt."]);
     }
 
+    /**
+     * @param array $rows
+     * @return void
+     */
     private function saveUsersData(array $rows)
     {
         if (!$rows) {
@@ -107,10 +128,10 @@ class Import extends ContainerAwareCommand
             ->getQuery()
         ;
 
-        $existingUser = $query->getResult();
+        $existingUsers = $query->getResult();
         $emailToUserMap = [];
         /** @var User $user */
-        foreach ($existingUser as $user) {
+        foreach ($existingUsers as $user) {
             $emailToUserMap[$user->getEmail()] = $user;
         }
 
